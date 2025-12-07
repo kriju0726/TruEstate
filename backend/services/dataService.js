@@ -1,12 +1,11 @@
 // backend/services/dataService.js
 const fs = require('fs');
 const csv = require('csv-parser');
+const { Readable } = require('stream');
 
 let transactions = [];
 
-/* -------------------------------------------------
-   NORMALIZATION — same logic that we used earlier
-------------------------------------------------- */
+/* normalizeRecord (same as before) */
 function normalizeRecord(rec, idx) {
   const total_amount = rec['Total Amount'] ? Number(rec['Total Amount']) :
                       rec['Total'] ? Number(rec['Total']) : 0;
@@ -48,19 +47,47 @@ function normalizeRecord(rec, idx) {
   };
 }
 
-/* -------------------------------------------------
-   LOAD CSV — From URL (CSV_URL) or fallback local
-------------------------------------------------- */
+/* Helper: convert fetch() body (Web ReadableStream) -> Node Readable stream */
+function webToNodeStream(webStream) {
+  // Node 18+: Readable.fromWeb exists
+  if (Readable.fromWeb) {
+    try {
+      return Readable.fromWeb(webStream);
+    } catch (err) {
+      console.warn('Readable.fromWeb failed, falling back: ', err);
+    }
+  }
+
+  // Fallback: try if webStream has pipe (rare)
+  if (typeof webStream.pipe === 'function') {
+    return webStream;
+  }
+
+  // Last resort: accumulate chunks into buffer -> create Node stream (not ideal for large files)
+  const pass = new Readable();
+  (async () => {
+    try {
+      const reader = webStream.getReader();
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        pass.push(Buffer.from(value));
+      }
+      pass.push(null);
+    } catch (err) {
+      pass.destroy(err);
+    }
+  })();
+  return pass;
+}
+
+/* loadCSV: supports CSV_URL (fetch + stream) or fallback to local file */
 async function loadCSV(localPath) {
-  // 1️⃣ Prefer loading from CSV_URL (GitHub release, Dropbox etc.)
   if (process.env.CSV_URL) {
     const url = process.env.CSV_URL;
-
-    console.log("CSV_URL detected. Fetching CSV from:");
-    console.log(url);
+    console.log('CSV_URL detected. Fetching CSV from:', url);
 
     const res = await fetch(url);
-
     if (!res.ok) {
       throw new Error(`Failed to download CSV: ${res.status} ${res.statusText}`);
     }
@@ -69,19 +96,23 @@ async function loadCSV(localPath) {
       const results = [];
       let idx = 0;
 
-      const stream = res.body; // ReadableStream
-      stream
+      let nodeStream;
+      try {
+        nodeStream = webToNodeStream(res.body);
+      } catch (err) {
+        return reject(err);
+      }
+
+      // pipe Node stream into csv-parser
+      nodeStream
         .pipe(csv())
         .on('data', (row) => {
           try {
             results.push(normalizeRecord(row, idx));
             idx++;
-
-            if (idx % 50000 === 0) {
-              console.log(`Parsed ${idx} rows...`);
-            }
+            if (idx % 50000 === 0) console.log(`Parsed ${idx} rows...`);
           } catch (err) {
-            // ignore bad row
+            // ignore single row
           }
         })
         .on('end', () => {
@@ -91,18 +122,18 @@ async function loadCSV(localPath) {
           resolve();
         })
         .on('error', (err) => {
-          console.error("CSV parse error:", err);
+          console.error('CSV parse error (URL):', err);
           reject(err);
         });
     });
   }
 
-  // 2️⃣ Fallback: local file (not used on Render, but kept for local dev)
-  console.log("No CSV_URL detected — trying local file:", localPath);
+  // fallback: local file
+  console.log('No CSV_URL detected — trying local file:', localPath);
 
   return new Promise((resolve, reject) => {
     if (!fs.existsSync(localPath)) {
-      return reject(new Error("CSV not found locally at: " + localPath));
+      return reject(new Error('CSV not found locally at: ' + localPath));
     }
 
     const results = [];
@@ -111,10 +142,12 @@ async function loadCSV(localPath) {
     fs.createReadStream(localPath)
       .pipe(csv())
       .on('data', (row) => {
-        results.push(normalizeRecord(row, idx));
-        idx++;
-        if (idx % 50000 === 0) {
-          console.log(`Parsed ${idx} rows...`);
+        try {
+          results.push(normalizeRecord(row, idx));
+          idx++;
+          if (idx % 50000 === 0) console.log(`Parsed ${idx} rows...`);
+        } catch (err) {
+          // ignore row
         }
       })
       .on('end', () => {
@@ -126,27 +159,17 @@ async function loadCSV(localPath) {
   });
 }
 
-/* -------------------------------------------------
-   SIMPLE IN-MEMORY GETTER
-------------------------------------------------- */
 function getAll() {
   return transactions;
 }
 
-/* -------------------------------------------------
-   METADATA BUILDER
-------------------------------------------------- */
 function uniqueValues(key) {
   const set = new Set();
   transactions.forEach((t) => {
     const v = t[key];
     if (v == null) return;
-
-    if (Array.isArray(v)) {
-      v.forEach((x) => set.add(x));
-    } else {
-      set.add(v);
-    }
+    if (Array.isArray(v)) v.forEach((x) => set.add(x));
+    else set.add(v);
   });
   return Array.from(set).sort();
 }
@@ -158,20 +181,11 @@ function metadata() {
     product_categories: uniqueValues('product_category'),
     tags: uniqueValues('tags'),
     payment_methods: uniqueValues('payment_method'),
-    age_min: transactions.reduce(
-      (m, t) => (t.age != null ? Math.min(m, t.age) : m),
-      Infinity
-    ),
-    age_max: transactions.reduce(
-      (m, t) => (t.age != null ? Math.max(m, t.age) : m),
-      -Infinity
-    ),
+    age_min: transactions.reduce((m, t) => (t.age != null ? Math.min(m, t.age) : m), Infinity),
+    age_max: transactions.reduce((m, t) => (t.age != null ? Math.max(m, t.age) : m), -Infinity),
   };
 }
 
-/* -------------------------------------------------
-   EXPORTS
-------------------------------------------------- */
 module.exports = {
   loadCSV,
   getAll,
