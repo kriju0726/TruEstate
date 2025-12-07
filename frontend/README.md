@@ -1,0 +1,1 @@
+Frontend improved. Set VITE_API_BASE if backend not at default.
