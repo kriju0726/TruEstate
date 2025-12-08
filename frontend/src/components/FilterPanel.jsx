@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
 
 const AGE_RANGES = [
-  { label: 'Any', min: null, max: null },
+  { label: 'Age', min: null, max: null },
   { label: '21 - 30', min: 21, max: 30 },
   { label: '31 - 40', min: 31, max: 40 },
   { label: '41 - 50', min: 41, max: 50 },
