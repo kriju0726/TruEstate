@@ -41,6 +41,8 @@ Two-tier architecture: React frontend (Vite) + Node/Express backend. Backend rea
 │  │  └─ App.jsx
 ├─ docs/
 │  └─ architecture.md
+├─ images/
+├─ README.md
 
 ## Module responsibilities
 - dataService.js: CSV normalization and metadata extraction.
